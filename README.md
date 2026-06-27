@@ -17,9 +17,13 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
   **#6–#8**, then the waitlisted **#1–#4** as a fallback — configurable via *Download link options*.
 - **Captcha handled inside calibre.** The slow‑download pages sit behind a DDoS‑Guard JavaScript
   challenge that calibre's JS‑free downloader can't pass. When that happens, opening a result loads
-  **Slow Partner Server #5** in calibre's *embedded* browser (QtWebEngine/Chromium), where you solve
-  the check once and download in‑app — no full‑site navigation. The DDoS‑Guard clearance cookie is
-  then reused so the silent green‑arrow path keeps working until it expires (~20 min).
+  **Slow Partner Server #5** in an *in‑process* Chromium dialog (`slow_browser.py`, QtWebEngine),
+  where you solve the check once and the "Download now" file is added straight to your library — no
+  full‑site navigation. That dialog also **captures the DDoS‑Guard clearance cookie**
+  (`cookieStore().cookieAdded` → the plugin's `remember_cookies()`), which is re‑injected into every
+  subsequent request, so the silent green‑arrow path keeps working until the cookie expires (~20 min).
+  (calibre's own `WebStoreDialog` runs out‑of‑process, so a bundled in‑process dialog is required to
+  reach the cookie store; it falls back to `WebStoreDialog` if QtWebEngine is unavailable.)
 - **Self‑updating domains.** Anna's Archive rotates domains constantly due to takedowns (`*.org`,
   `*.li`, `*.se` are all dead as of 2026). The plugin now pulls the current official domains from the
   [Anna's Archive Wikipedia infobox](https://en.wikipedia.org/wiki/Anna's_Archive) at runtime (the
@@ -36,13 +40,16 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
   IP**. Residential IPs usually pass its passive check; datacenter/VPN IPs are often hard‑blocked
   (HTTP 403, as seen above). When blocked, use the embedded‑browser captcha flow above.
 - There is **no JavaScript‑free way to auto‑solve** the challenge — that is by design on Anna's side.
-- Cookie reuse is **half‑wired**: the plugin injects any stored DDoS‑Guard clearance cookies into
-  every request (`_browser()`), and exposes a `remember_cookies()` hook, but that hook is **not yet
-  auto‑connected** to the embedded browser's cookie store (calibre's `WebStoreDialog` internals vary
-  by version, so this needs testing on a real calibre to hook reliably). Until then the embedded flow
-  downloads in‑app via the browser itself; the silent green‑arrow reuse kicks in once the hook is wired.
-- Not yet exercised end‑to‑end inside a running calibre: the embedded‑browser captcha dialog and the
-  green‑arrow download of a resolved slow URL. Please verify these in your own calibre on your connection.
+- There is **no JavaScript‑free way to auto‑solve** the challenge — that is by design on Anna's side.
+- Cookie reuse caveats: DDoS‑Guard also keys clearance on IP and User‑Agent (the in‑process dialog
+  sets the same UA as the plugin to match), and possibly TLS fingerprint, so a captured cookie may
+  still be rejected by mechanize in some cases. The in‑app dialog download always works regardless;
+  the silent green‑arrow reuse is the best‑effort bonus.
+- **Not yet exercised end‑to‑end inside a running calibre** (could not run calibre in the build
+  environment): the in‑process QtWebEngine dialog, cookie capture/reuse, the in‑dialog
+  add‑to‑library, and the green‑arrow download of a resolved slow URL. The code is written against
+  calibre's own QtWebEngine API (`qt.webengine`) with Qt5/Qt6 guards, but please verify in your own
+  calibre on your own connection.
 
 ## Installation
 ### From source

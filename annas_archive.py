@@ -76,12 +76,11 @@ class AnnasArchiveStore(StorePlugin):
     def remember_cookies(self, cookies):
         """Store clearance cookies captured from the embedded browser.
 
-        `cookies` is an iterable of (name, value, domain) tuples.
-
-        NOTE: this hook is not yet auto-connected to the embedded WebStoreDialog
-        cookie store (calibre's dialog internals vary by version). Once wired up
-        -- e.g. profile.cookieStore().cookieAdded -> remember_cookies -- the
-        silent green-arrow path will reuse the DDoS-Guard clearance for ~20 min."""
+        `cookies` is an iterable of (name, value, domain) tuples. The in-process
+        slow-download browser (slow_browser.SlowDownloadBrowser) connects its
+        profile.cookieStore().cookieAdded signal to this, so once the user clears
+        the DDoS-Guard / captcha challenge the clearance cookie is reused on the
+        silent green-arrow path until it expires (~20 min)."""
         for name, value, domain in cookies:
             if any(name.startswith(p) for p in _CLEARANCE_COOKIES):
                 self._cookies[(domain.lstrip('.'), name)] = value
@@ -213,13 +212,27 @@ class AnnasArchiveStore(StorePlugin):
             d.exec()
 
     def _open_slow_in_browser(self, parent, md5) -> bool:
-        """Open Slow Partner Server #5 in calibre's embedded Chromium so the user
-        can clear the DDoS-Guard / captcha challenge and download in-app.
+        """Open Slow Partner Server #5 in an embedded Chromium so the user can
+        clear the DDoS-Guard / captcha challenge and download in-app.
 
-        Returns True if the dialog was shown."""
+        Prefers our own in-process QtWebEngine dialog (so we can capture the
+        clearance cookie for the silent green-arrow path); falls back to
+        calibre's out-of-process WebStoreDialog if WebEngine isn't available.
+
+        Returns True if a dialog was shown."""
         base = self.working_mirror or self._mirrors()[0]
         # Slow Partner Server #5 == /slow_download/<md5>/0/4
         url = f"{base}/slow_download/{md5}/0/{SLOW_SERVER_ORDER[0]}"
+
+        try:
+            from calibre_plugins.store_annas_archive.slow_browser import available, SlowDownloadBrowser
+            if available():
+                d = SlowDownloadBrowser(self.gui, self, url, _USER_AGENT, self.config.get('tags', ''), parent)
+                d.exec()
+                return True
+        except Exception as err:
+            prints(f"Anna's Archive: in-app slow browser unavailable, falling back: {err}")
+
         try:
             d = WebStoreDialog(self.gui, base, parent, url)
             d.setWindowTitle(self.name + " — Slow Partner Server #5 (solve the check, then download)")
