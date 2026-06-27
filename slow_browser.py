@@ -67,6 +67,7 @@ class SlowDownloadBrowser(QDialog):
         self.tags = tags or ''
         self._tmpdir = tempfile.mkdtemp(prefix='aa_slow_')
         self._path = None
+        self._added = False
 
         self.setWindowTitle(_("Anna's Archive — Slow Partner Server #5"))
         self.resize(1000, 820)
@@ -151,26 +152,61 @@ class SlowDownloadBrowser(QDialog):
             prints("Anna's Archive: download_requested failed:", err)
 
     def _finished(self, item):
+        # isFinishedChanged / finished can fire more than once; only act once.
+        if self._added:
+            return
         try:
+            # Only proceed on a genuinely completed download.
+            is_finished = getattr(item, 'isFinished', None)
+            if callable(is_finished) and not item.isFinished():
+                return
             path = self._path
-            if not path or not os.path.exists(path):
+            if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
                 self.status.setText(_('Download did not complete.'))
                 return
-            added = False
-            add_action = None
-            try:
-                add_action = self.gui.iactions.get('Add Books')
-            except Exception:
-                add_action = None
-            if add_action is not None:
-                try:
-                    add_action.add_filesystem_book(path, allow_device=False)
-                    added = True
-                except Exception as err:
-                    prints("Anna's Archive: add_filesystem_book failed:", err)
-            if added:
-                self.status.setText(_('✓ Added to your calibre library.'))
+            self._added = True
+
+            if self._add_to_library(path):
+                self.status.setText(_('✓ Downloaded and added to your calibre library.'))
             else:
-                self.status.setText(_('Saved to: %s') % path)
+                self.status.setText(_('Downloaded, but could not auto-add. Saved to: %s') % path)
         except Exception as err:
             prints("Anna's Archive: add to library failed:", err)
+
+    def _add_to_library(self, path) -> bool:
+        """Add the downloaded file to the current calibre library, applying any
+        configured tags. Returns True on success."""
+        try:
+            add_action = self.gui.iactions.get('Add Books')
+        except Exception:
+            add_action = None
+        if add_action is None:
+            return False
+
+        tags = [t.strip() for t in self.tags.split(',') if t.strip()] if self.tags else []
+        try:
+            if tags:
+                # add_filesystem_book runs asynchronously, so we can't reliably
+                # tag afterwards. Import directly so we can set tags atomically.
+                from calibre.ebooks.metadata.meta import get_metadata
+                fmt = os.path.splitext(path)[1].lstrip('.').lower() or None
+                with open(path, 'rb') as f:
+                    mi = get_metadata(f, fmt)
+                mi.tags = list(dict.fromkeys((list(mi.tags or []) + tags)))
+                db = self.gui.current_db.new_api
+                book_id = db.create_book_entry(mi)
+                db.add_format(book_id, fmt.upper(), path, run_hooks=False)
+                self.gui.library_view.model().books_added(1)
+                self.gui.refresh_ondevice()
+                return True
+        except Exception as err:
+            prints("Anna's Archive: tagged import failed, falling back:", err)
+
+        # No tags (or tagged import failed): use the normal Add Books flow, which
+        # handles format-merging and duplicate detection for us.
+        try:
+            add_action.add_filesystem_book(path, allow_device=False)
+            return True
+        except Exception as err:
+            prints("Anna's Archive: add_filesystem_book failed:", err)
+            return False
