@@ -5,11 +5,25 @@ if TYPE_CHECKING:
     from qt.core import QCheckBox, QComboBox
 
 __all__ = (
-    'DEFAULT_MIRRORS', 'SearchOption', 'SearchConfiguration', 'CheckboxConfiguration', 'Order', 'Content', 'Access',
-    'FileType', 'Source', 'Language'
+    'DEFAULT_MIRRORS', 'WIKIPEDIA_URL', 'SLOW_SERVER_ORDER', 'SearchOption', 'SearchConfiguration',
+    'CheckboxConfiguration', 'Order', 'Content', 'Access', 'FileType', 'Source', 'Language'
 )
 
-DEFAULT_MIRRORS = ['https://annas-archive.org', 'https://annas-archive.li', 'https://annas-archive.se']
+# Anna's Archive rotates domains frequently because of takedowns. These are the
+# current ones (June 2026) and are only a *fallback* -- by default the plugin
+# refreshes this list at runtime from the Wikipedia infobox (see WIKIPEDIA_URL),
+# which Anna's Archive itself points users to for the up-to-date domains.
+DEFAULT_MIRRORS = ['https://annas-archive.gl', 'https://annas-archive.pk', 'https://annas-archive.gd']
+
+# Page whose infobox "URL" row lists the live official domains.
+WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/Anna's_Archive"
+
+# Order in which Slow Partner Servers are tried. On the md5 page the links are
+# /slow_download/<md5>/0/<index>; index 0 == "Slow Partner Server #1".
+# Servers #5-#8 (indexes 4-7) are the "no waitlist" ones, so we prefer #5 first,
+# then the other no-waitlist servers, then the waitlisted #1-#4 as a last resort.
+SLOW_SERVER_ORDER = [4, 5, 6, 7, 0, 1, 2, 3]
+
 RESULTS_PER_PAGE = 100
 
 

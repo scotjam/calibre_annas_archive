@@ -69,7 +69,7 @@ class ConfigWidget(QWidget):
     def __init__(self, store):
         super().__init__()
         self.store = store
-        self.resize(635, 780)
+        self.resize(635, 820)
 
         main_layout = QVBoxLayout(self)
 
@@ -105,6 +105,18 @@ class ConfigWidget(QWidget):
         link_options.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         link_layout = QVBoxLayout(link_options)
         link_layout.setContentsMargins(6, 6, 6, 6)
+        self.slow_servers = QCheckBox(_('Direct download via Slow Partner Servers (#5 first)'), link_options)
+        self.slow_servers.setToolTip(_(
+            'Resolve Anna\'s Archive Slow Partner Server links to a direct file URL so the download '
+            'button works in calibre. Tries Slow Partner Server #5 first (no waitlist), then #6-#8, then #1-#4.'))
+        link_layout.addWidget(self.slow_servers)
+        self.slow_captcha_browser = QCheckBox(_('If blocked, open Slow Server #5 in calibre\'s browser'),
+                                              link_options)
+        self.slow_captcha_browser.setToolTip(_(
+            'When a slow download is gated by a DDoS-Guard / captcha check (which has no JavaScript-free '
+            'bypass), opening a result loads Slow Partner Server #5 inside calibre\'s embedded browser so '
+            'you can solve the check once and download in-app. The clearance is then reused for a while.'))
+        link_layout.addWidget(self.slow_captcha_browser)
         self.url_extension = QCheckBox(_('Verify url extension'), link_options)
         self.url_extension.setToolTip(_('Verify that the each download url ends with correct extension for the format'))
         link_layout.addWidget(self.url_extension)
@@ -117,6 +129,11 @@ class ConfigWidget(QWidget):
         mirrors = QGroupBox(_('Mirrors'), self)
         layout = QVBoxLayout(mirrors)
         layout.setContentsMargins(1, 1, 1, 1)
+        self.wikipedia_mirrors = QCheckBox(_('Auto-update domains from Wikipedia'), mirrors)
+        self.wikipedia_mirrors.setToolTip(_(
+            'Anna\'s Archive domains change often due to takedowns. When enabled, the current official '
+            'domains are pulled from the Anna\'s Archive Wikipedia page at runtime and tried first.'))
+        layout.addWidget(self.wikipedia_mirrors)
         self.mirrors = MirrorsList(mirrors)
         layout.addWidget(self.mirrors)
         horizontal_layout.addWidget(mirrors)
@@ -167,6 +184,9 @@ class ConfigWidget(QWidget):
         config = self.store.config
 
         self.open_external.setChecked(config.get('open_external', False))
+        self.slow_servers.setChecked(config.get('slow_servers', True))
+        self.slow_captcha_browser.setChecked(config.get('slow_captcha_browser', True))
+        self.wikipedia_mirrors.setChecked(config.get('wikipedia_mirrors', True))
         self.mirrors.load_mirrors(config.get('mirrors', DEFAULT_MIRRORS))
 
         search_opts = config.get('search', {})
@@ -179,6 +199,9 @@ class ConfigWidget(QWidget):
 
     def save_settings(self):
         self.store.config['open_external'] = self.open_external.isChecked()
+        self.store.config['slow_servers'] = self.slow_servers.isChecked()
+        self.store.config['slow_captcha_browser'] = self.slow_captcha_browser.isChecked()
+        self.store.config['wikipedia_mirrors'] = self.wikipedia_mirrors.isChecked()
         self.store.config['mirrors'] = self.mirrors.get_mirrors()
 
         self.store.config['search'] = {
