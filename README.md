@@ -54,10 +54,10 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
   attempt transparently re‑clears via the minimised browser.
 - Sometimes DDoS‑Guard shows an interactive captcha instead of auto‑passing; then the minimised
   window is surfaced for a one‑time solve.
-- **Verify in your own calibre.** The threading bridge (worker → GUI), the minimised QtWebEngine
-  clearance window, cookie reuse, and the green‑arrow download of the resolved URL are written against
-  calibre's `qt.webengine` API with Qt5/Qt6 guards but should be confirmed live; the standalone
-  network logic (search, detail parse, cookie‑authenticated slow resolution) **was** verified.
+- Confirmed working in calibre 9.x on Windows: the worker→GUI threading bridge, the minimised
+  QtWebEngine clearance window, cookie reuse, and the green‑arrow download of the resolved slow URL.
+  The green arrow can take a few tens of seconds (see the note at the top); double‑click a result's
+  title to download manually instead.
 
 ## Installation
 ### From source
