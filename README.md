@@ -60,7 +60,16 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
   title to download manually instead.
 
 ## Installation
-### From source
+No extra prerequisites — it uses calibre's bundled browser (QtWebEngine) for the DDoS‑Guard check, so
+nothing else needs installing.
+
+**From the release zip:**
+1. Download `calibre_annas_archive-vX.X.X.zip` from the
+   [Releases](https://github.com/scotjam/calibre_annas_archive/releases) page.
+2. In calibre: **Preferences ▸ Advanced ▸ Plugins ▸ Load plugin from file**, and select that zip.
+3. **Restart calibre.** The store then appears under **Get books**.
+
+**Or from source:**
 ```shell
 calibre-customize -b <path to cloned repo>
 ```
@@ -68,8 +77,7 @@ or build the zip and add it:
 ```shell
 ./zip_release.sh && calibre-customize -a $(ls calibre_annas_archive-v*.zip -1rt | tail -n1)
 ```
-On Windows you can instead go to `Preferences > Plugins`, click `Load plugin from file`, and select
-the built `calibre_annas_archive-vx.x.x.zip`.
+Restart calibre afterwards.
 
 ## Configuration
 Go to `Preferences > Plugins > Store`, then double‑click `Anna's Archive (x.x.x)` to open the settings.
