@@ -9,6 +9,12 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
 > auto‑updates the (frequently‑changing) domains from Wikipedia, and adds an in‑app way to clear the
 > DDoS‑Guard / captcha check. See **What's new in this fork** below.
 
+> **Downloading — the green arrow can be slow.** The green ▼ download arrow may take a **few tens of
+> seconds** per result: it fetches the book's page, resolves the real download link, and (the first
+> time) clears the DDoS‑Guard check in the background. To skip that wait, you can **download manually
+> by double‑clicking the book's title** in the results — that opens it in the in‑app browser where you
+> can download it directly.
+
 ## What's new in this fork
 
 - **The green download button works for Slow Partner Servers.** `get_details` resolves the
