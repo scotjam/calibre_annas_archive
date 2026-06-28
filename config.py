@@ -117,6 +117,14 @@ class ConfigWidget(QWidget):
             'bypass), opening a result loads Slow Partner Server #5 inside calibre\'s embedded browser so '
             'you can solve the check once and download in-app. The clearance is then reused for a while.'))
         link_layout.addWidget(self.slow_captcha_browser)
+        self.auto_clearance = QCheckBox(_('Auto-pass the DDoS-Guard check (flashes a minimised browser)'),
+                                        link_options)
+        self.auto_clearance.setToolTip(_(
+            'To make the green download button work for slow downloads, the DDoS-Guard check must be '
+            'cleared in a real browser. When enabled, a minimised browser window opens briefly to clear '
+            'it automatically (usually no interaction needed), and the clearance is reused so downloads '
+            'resolve directly. Disable to require the manual in-app browser instead.'))
+        link_layout.addWidget(self.auto_clearance)
         self.url_extension = QCheckBox(_('Verify url extension'), link_options)
         self.url_extension.setToolTip(_('Verify that the each download url ends with correct extension for the format'))
         link_layout.addWidget(self.url_extension)
@@ -186,6 +194,7 @@ class ConfigWidget(QWidget):
         self.open_external.setChecked(config.get('open_external', False))
         self.slow_servers.setChecked(config.get('slow_servers', True))
         self.slow_captcha_browser.setChecked(config.get('slow_captcha_browser', True))
+        self.auto_clearance.setChecked(config.get('auto_clearance', True))
         self.wikipedia_mirrors.setChecked(config.get('wikipedia_mirrors', True))
         self.mirrors.load_mirrors(config.get('mirrors', DEFAULT_MIRRORS))
 
@@ -201,6 +210,7 @@ class ConfigWidget(QWidget):
         self.store.config['open_external'] = self.open_external.isChecked()
         self.store.config['slow_servers'] = self.slow_servers.isChecked()
         self.store.config['slow_captcha_browser'] = self.slow_captcha_browser.isChecked()
+        self.store.config['auto_clearance'] = self.auto_clearance.isChecked()
         self.store.config['wikipedia_mirrors'] = self.wikipedia_mirrors.isChecked()
         self.store.config['mirrors'] = self.mirrors.get_mirrors()
 

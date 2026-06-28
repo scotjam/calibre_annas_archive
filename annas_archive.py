@@ -30,9 +30,11 @@ SearchResults = Generator[SearchResult, None, None]
 _CHALLENGE_MARKERS = ('ddos-guard', 'ddg-l10n-title', 'just a moment', 'cf-browser-verification',
                       'challenge-platform', 'cf_chl_opt')
 
-# DDoS-Guard / Cloudflare clearance cookies worth re-using once the user has
-# solved the challenge in the embedded browser.
-_CLEARANCE_COOKIES = ('__ddg', 'cf_clearance', '__cf')
+# DDoS-Guard / Cloudflare clearance cookies worth re-using once the challenge
+# has been cleared in a real browser.
+_CLEARANCE_COOKIES = ('__ddg', 'ddg', 'cf_clearance', '__cf')
+# Presence of any of these in our cookie jar means we hold a live clearance.
+_CLEARANCE_MARKERS = ('__ddg1_', '__ddg5_', '__ddgid_', 'cf_clearance')
 
 _USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
@@ -52,12 +54,29 @@ class AnnasArchiveStore(StorePlugin):
         super().__init__(gui, name, config, base_plugin)
         self.working_mirror = None
         self._wiki_mirrors = None          # cached Wikipedia lookup for this session
-        # Clearance cookies captured from the embedded browser, keyed by
-        # (domain, name). Re-injected into every browser() so the silent
-        # green-arrow path keeps working until they expire.
+        # Clearance cookies (keyed by (domain, name)) captured from a real
+        # browser. Re-injected into every browser() so mechanize can fetch the
+        # otherwise challenge-gated /slow_download/ pages.
         self._cookies = {}
+        # Bridges worker-thread get_details to a GUI-thread clearance browser.
+        self.clearance = None
+        try:
+            from calibre_plugins.store_annas_archive.clearance import ClearanceManager, available
+            if available():
+                self.clearance = ClearanceManager(self)
+        except Exception as err:
+            prints("Anna's Archive: clearance manager unavailable:", err)
 
     # ------------------------------------------------------------------ utils
+
+    def user_agent(self):
+        return _USER_AGENT
+
+    def has_clearance(self) -> bool:
+        return any(name in _CLEARANCE_MARKERS for (_d, name) in self._cookies)
+
+    def _drop_clearance(self):
+        self._cookies.clear()
 
     def _browser(self):
         br = browser(user_agent=_USER_AGENT)
@@ -74,16 +93,15 @@ class AnnasArchiveStore(StorePlugin):
         return any(m.encode() in head for m in _CHALLENGE_MARKERS)
 
     def remember_cookies(self, cookies):
-        """Store clearance cookies captured from the embedded browser.
+        """Store clearance cookies captured from a real browser.
 
-        `cookies` is an iterable of (name, value, domain) tuples. The in-process
-        slow-download browser (slow_browser.SlowDownloadBrowser) connects its
-        profile.cookieStore().cookieAdded signal to this, so once the user clears
-        the DDoS-Guard / captcha challenge the clearance cookie is reused on the
-        silent green-arrow path until it expires (~20 min)."""
+        `cookies` is an iterable of (name, value, domain) tuples. The clearance
+        browser (clearance.ClearanceManager) and the slow-download dialog feed
+        this; the cookies are then re-injected by _browser() so the silent
+        green-arrow path can fetch /slow_download/ until they expire."""
         for name, value, domain in cookies:
-            if any(name.startswith(p) for p in _CLEARANCE_COOKIES):
-                self._cookies[(domain.lstrip('.'), name)] = value
+            if 'annas-archive' in (domain or '') or any(name.startswith(p) for p in _CLEARANCE_COOKIES):
+                self._cookies[((domain or '').lstrip('.'), name)] = value
 
     # ---------------------------------------------------------------- mirrors
 
@@ -264,7 +282,7 @@ class AnnasArchiveStore(StorePlugin):
         # 1) Preferred path: resolve a Slow Partner Server (#5 first) to a real
         #    file URL. If we manage it, the green-arrow button downloads silently.
         if use_slow:
-            slow_url = self._resolve_best_slow(doc, br, timeout)
+            slow_url = self._resolve_best_slow(doc, timeout)
             if slow_url:
                 search_result.downloads[fmt] = slow_url
                 return
@@ -313,10 +331,12 @@ class AnnasArchiveStore(StorePlugin):
 
     # ------------------------------------------------- slow partner servers
 
-    def _resolve_best_slow(self, doc, br, timeout):
-        """Try the Slow Partner Servers in #5-first order and return the first
-        real file URL we can resolve headlessly. Returns None if every server we
-        try is behind a JS challenge (then the user falls back to open())."""
+    def _resolve_best_slow(self, doc, timeout):
+        """Resolve a Slow Partner Server (#5 first) to a direct partner-CDN file
+        URL. The /slow_download/ pages are behind a DDoS-Guard JS challenge, so
+        if mechanize gets challenged we obtain a clearance cookie via a minimised
+        real browser (on the GUI thread) and retry -- after which mechanize gets
+        through and the green-arrow button can download the file directly."""
         slow = {}
         for a in doc.xpath('//div[@id="md5-panel-downloads"]//a[contains(@class, "js-download-link")]'):
             href = a.get('href') or ''
@@ -330,29 +350,48 @@ class AnnasArchiveStore(StorePlugin):
         order = [i for i in SLOW_SERVER_ORDER if i in slow]
         order += [i for i in sorted(slow) if i not in SLOW_SERVER_ORDER]
 
-        challenged = False
+        url, challenged = self._try_slow_servers(order, slow, timeout)
+        if url:
+            return url
+
+        # Challenged. Get a fresh clearance via a real (minimised) browser and
+        # retry once. Drop any stale cookies first so a re-clear is attempted.
+        if challenged and self.config.get('auto_clearance', True) and self.clearance is not None:
+            self._drop_clearance()
+            try:
+                ok = self.clearance.ensure_clearance(slow[order[0]])
+            except Exception as err:
+                prints(f"Anna's Archive: clearance request failed: {err}")
+                ok = False
+            if ok:
+                url, _ = self._try_slow_servers(order, slow, timeout)
+                return url
+        return None
+
+    def _try_slow_servers(self, order, slow, timeout):
+        """Try each slow server in order with the current cookies. Returns
+        (url_or_None, challenged_bool). Stops at the first challenge because if
+        one server challenges us they all will (it's IP/cookie-based)."""
+        br = self._browser()
         for idx in order:
             try:
                 url = self._resolve_slow_download(slow[idx], br, timeout)
             except _SlowChallenge:
-                challenged = True
-                continue
+                return None, True
             except (HTTPError, URLError, TimeoutError, RemoteDisconnected, OSError):
                 continue
             if url:
                 prints(f"Anna's Archive: resolved Slow Partner Server #{idx + 1}")
-                return url
-        if challenged:
-            prints("Anna's Archive: slow servers behind a challenge; use the "
-                   "download via the result's open action to solve it in-app.")
-        return None
+                return url, False
+        return None, False
 
     def _resolve_slow_download(self, url, br, timeout):
         """Fetch a /slow_download/ page and extract the real file link.
 
-        The countdown on that page is purely client-side -- the href is present
-        in the initial HTML -- so mechanize can read it *iff* the page isn't
-        gated by a JS challenge."""
+        The real "Download now" anchor points at a partner CDN (e.g. momot.rs)
+        that is not itself challenge-gated, so the returned URL is directly
+        downloadable. mechanize can read it as long as the page itself isn't a
+        DDoS-Guard interstitial (i.e. we hold a clearance cookie)."""
         try:
             with closing(br.open(url, timeout=timeout)) as resp:
                 final = resp.geturl()
@@ -366,13 +405,17 @@ class AnnasArchiveStore(StorePlugin):
             raise _SlowChallenge(url)
 
         doc = html.fromstring(body)
-        href = ''.join(doc.xpath('//a[@id="download-button"]/@href')).strip()
+        # The current AA layout: <a ... target="_blank">📚 Download now</a>.
+        href = ''
+        for a in doc.xpath('//a[contains(normalize-space(.), "Download now")]'):
+            href = (a.get('href') or '').strip()
+            if href:
+                break
+        if not href:  # older / alternative layouts
+            href = ''.join(doc.xpath('//a[@id="download-button"]/@href')).strip()
         if not href:
-            # Some variants put the URL as plain text in a styled span.
             href = ''.join(t.strip() for t in doc.xpath(
                 '//span[contains(@class, "bg-gray-200") and contains(@class, "break-all")]/text()')).strip()
-        if not href:
-            href = ''.join(doc.xpath('//a[contains(@class, "js-download-link")]/@href')).strip()
         if not href:
             return None
         return urljoin(final, href)

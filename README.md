@@ -11,19 +11,22 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
 
 ## What's new in this fork
 
-- **Direct downloads from Anna's Archive Slow Partner Servers.** `get_details` now resolves the
-  `/slow_download/<md5>/0/<n>` pages to a real file URL, so calibre's green‑arrow download button
-  works without clicking through to the website. Servers are tried **#5 first** (no waitlist), then
-  **#6–#8**, then the waitlisted **#1–#4** as a fallback — configurable via *Download link options*.
-- **Captcha handled inside calibre.** The slow‑download pages sit behind a DDoS‑Guard JavaScript
-  challenge that calibre's JS‑free downloader can't pass. When that happens, opening a result loads
-  **Slow Partner Server #5** in an *in‑process* Chromium dialog (`slow_browser.py`, QtWebEngine),
-  where you solve the check once and the "Download now" file is added straight to your library — no
-  full‑site navigation. That dialog also **captures the DDoS‑Guard clearance cookie**
-  (`cookieStore().cookieAdded` → the plugin's `remember_cookies()`), which is re‑injected into every
-  subsequent request, so the silent green‑arrow path keeps working until the cookie expires (~20 min).
-  (calibre's own `WebStoreDialog` runs out‑of‑process, so a bundled in‑process dialog is required to
-  reach the cookie store; it falls back to `WebStoreDialog` if QtWebEngine is unavailable.)
+- **The green download button works for Slow Partner Servers.** `get_details` resolves the
+  `/slow_download/<md5>/0/<n>` page to the real partner‑CDN file URL (the "📚 Download now" link, which
+  points at a host like `momot.rs` that is *not* itself challenge‑gated), and puts it in
+  `result.downloads` — so calibre's green‑arrow button downloads it directly. Servers are tried
+  **#5 first** (no waitlist), then **#6–#8**, then the waitlisted **#1–#4**.
+- **Auto‑passing the DDoS‑Guard check (the hard part).** Those pages sit behind a DDoS‑Guard
+  JavaScript challenge that calibre's JS‑free downloader (mechanize) can't clear, *and* `get_details`
+  runs on a worker thread where QtWebEngine can't. So `clearance.py` runs a **minimised** in‑process
+  Chromium window on the GUI thread that clears the challenge — usually with **no interaction** — and
+  captures the clearance cookies. Those cookies are re‑injected into mechanize, after which the slow
+  pages resolve directly (**verified**: `urllib` + the captured cookies → HTTP 200 + the real CDN
+  link). The clearance is reused for all results until it expires; if a captcha actually appears, the
+  minimised window is brought to the front so you can solve it once.
+- **Manual fallback dialog.** `slow_browser.py` opens Slow Server #5 in an in‑process browser
+  (double‑click a result) that auto‑detects the "Download now" link, downloads it, and adds it to your
+  library — used if you turn auto‑clearance off or QtWebEngine resolution fails.
 - **Self‑updating domains.** Anna's Archive rotates domains constantly due to takedowns (`*.org`,
   `*.li`, `*.se` are all dead as of 2026). The plugin now pulls the current official domains from the
   [Anna's Archive Wikipedia infobox](https://en.wikipedia.org/wiki/Anna's_Archive) at runtime (the
@@ -33,23 +36,22 @@ A [Calibre](https://calibre-ebook.com/) store plugin for [Anna's Archive](https:
 
 ### Limitations (please read)
 
-- What was verified against the live mirrors (`.gl/.pk/.gd`): `/`, `/search`, and `/md5/<md5>` return
-  HTTP 200 and parse correctly, so search and detail extraction work headlessly. `/slow_download/...`
-  returned **HTTP 403 + a DDoS‑Guard JS challenge** from a datacenter/VPN IP.
-- Resolving a slow download **headlessly only works when DDoS‑Guard isn't actively challenging your
-  IP**. Residential IPs usually pass its passive check; datacenter/VPN IPs are often hard‑blocked
-  (HTTP 403, as seen above). When blocked, use the embedded‑browser captcha flow above.
-- There is **no JavaScript‑free way to auto‑solve** the challenge — that is by design on Anna's side.
-- There is **no JavaScript‑free way to auto‑solve** the challenge — that is by design on Anna's side.
-- Cookie reuse caveats: DDoS‑Guard also keys clearance on IP and User‑Agent (the in‑process dialog
-  sets the same UA as the plugin to match), and possibly TLS fingerprint, so a captured cookie may
-  still be rejected by mechanize in some cases. The in‑app dialog download always works regardless;
-  the silent green‑arrow reuse is the best‑effort bonus.
-- **Not yet exercised end‑to‑end inside a running calibre** (could not run calibre in the build
-  environment): the in‑process QtWebEngine dialog, cookie capture/reuse, the in‑dialog
-  add‑to‑library, and the green‑arrow download of a resolved slow URL. The code is written against
-  calibre's own QtWebEngine API (`qt.webengine`) with Qt5/Qt6 guards, but please verify in your own
-  calibre on your own connection.
+- Verified against the live mirrors (`.gl/.pk/.gd`): `/`, `/search`, `/md5/<md5>` return HTTP 200 and
+  parse fine. `/slow_download/...` returns **HTTP 403 + DDoS‑Guard** to JS‑free clients (true even on
+  a residential IP — confirmed via the connection in use). After a real browser clears the challenge,
+  the captured cookies make `urllib`/mechanize return **HTTP 200 + the real CDN link** — this is the
+  mechanism the green button relies on.
+- The captured download URL is **time‑limited** (the partner‑CDN link carries an expiry token), so
+  calibre should download it promptly after it's resolved — which it does on the green‑arrow click.
+- Cookie reuse caveats: DDoS‑Guard keys clearance on IP + User‑Agent (the clearance browser sets the
+  same UA as mechanize to match) and the cookie expires (minutes–hours); when it does, the next
+  attempt transparently re‑clears via the minimised browser.
+- Sometimes DDoS‑Guard shows an interactive captcha instead of auto‑passing; then the minimised
+  window is surfaced for a one‑time solve.
+- **Verify in your own calibre.** The threading bridge (worker → GUI), the minimised QtWebEngine
+  clearance window, cookie reuse, and the green‑arrow download of the resolved URL are written against
+  calibre's `qt.webengine` API with Qt5/Qt6 guards but should be confirmed live; the standalone
+  network logic (search, detail parse, cookie‑authenticated slow resolution) **was** verified.
 
 ## Installation
 ### From source

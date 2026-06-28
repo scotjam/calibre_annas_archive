@@ -1,18 +1,21 @@
 """In-process QtWebEngine browser for Anna's Archive slow downloads.
 
 calibre's own ``WebStoreDialog`` runs the store browser in a *separate* process,
-so a store plugin can't reach its cookie store. This module provides a small
-in-process Chromium dialog instead, which lets us:
+so a store plugin can't reach its cookie store or its downloads. This module
+provides a small in-process Chromium dialog instead, pointed straight at
+*Slow Partner Server #5*. It:
 
-  * capture the DDoS-Guard / Cloudflare clearance cookie the moment the user
-    clears the challenge, and hand it back to the store plugin so the silent
-    (green-arrow) download path can reuse it until it expires; and
-  * accept the actual "Download now" download and add the file straight into the
-    calibre library.
+  * lets the user clear the DDoS-Guard / Cloudflare JS challenge (which has no
+    JavaScript-free bypass) in a real browser;
+  * captures the clearance cookie and hands it back to the store plugin so the
+    silent (green-arrow) path can reuse it for a while;
+  * once the challenge clears, finds the "Download now" link automatically (its
+    href points at a partner CDN that is *not* behind the challenge), downloads
+    it, and adds the file to the calibre library -- no manual clicking.
 
-Everything here is best-effort and defensive: QtWebEngine may be unavailable in
-some calibre builds, and the download-item API differs between Qt5 and Qt6, so
-imports and signal wiring are all guarded.
+Everything is best-effort and defensive: QtWebEngine may be unavailable in some
+builds, and several APIs differ between Qt5 and Qt6, so imports and signal wiring
+are guarded.
 """
 
 import os
@@ -21,15 +24,16 @@ import tempfile
 from calibre import prints
 
 try:  # Qt6 / calibre 6+
-    from qt.core import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QUrl
-    from qt.webengine import QWebEngineView, QWebEnginePage, QWebEngineProfile
+    from qt.core import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QUrl, QTimer
+    from qt.webengine import QWebEngineView, QWebEnginePage, QWebEngineProfile, QWebEngineSettings
     _HAS_WEBENGINE = True
     _QT5 = False
 except Exception:
     try:  # Qt5 / calibre 5
-        from PyQt5.QtCore import QUrl
+        from PyQt5.QtCore import QUrl, QTimer
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-        from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage, QWebEngineProfile
+        from PyQt5.QtWebEngineWidgets import (QWebEngineView, QWebEnginePage, QWebEngineProfile,
+                                              QWebEngineSettings)
         _HAS_WEBENGINE = True
         _QT5 = True
     except Exception:
@@ -45,6 +49,16 @@ except Exception:
 # DDoS-Guard / Cloudflare clearance cookies worth re-using.
 _CLEARANCE_PREFIXES = ('__ddg', 'cf_clearance', '__cf')
 
+# JS that returns the real "Download now" href once the page has cleared the
+# challenge (or '' if not present yet). The link's visible text contains
+# "Download now"; its href is an absolute URL to a partner CDN.
+_FIND_DOWNLOAD_JS = (
+    "(function(){var a=[].slice.call(document.querySelectorAll('a'));"
+    "for(var i=0;i<a.length;i++){var t=(a[i].textContent||'');"
+    "if(t.indexOf('Download now')>=0 && a[i].href) return a[i].href;}"
+    "return '';})()"
+)
+
 
 def available() -> bool:
     return _HAS_WEBENGINE
@@ -55,6 +69,16 @@ def _qba_to_str(value) -> str:
         return bytes(value).decode('utf-8', 'replace')
     except Exception:
         return str(value)
+
+
+if _HAS_WEBENGINE:
+    class _Page(QWebEnginePage):
+        """Open target="_blank" links in the same view so downloads aren't lost."""
+
+        def createWindow(self, _type):
+            return self
+else:  # pragma: no cover - placeholder so the class body below imports
+    _Page = object
 
 
 class SlowDownloadBrowser(QDialog):
@@ -68,20 +92,22 @@ class SlowDownloadBrowser(QDialog):
         self._tmpdir = tempfile.mkdtemp(prefix='aa_slow_')
         self._path = None
         self._added = False
+        self._triggered = False  # have we kicked off the actual file download yet
+        self._tries = 0
 
         self.setWindowTitle(_("Anna's Archive — Slow Partner Server #5"))
         self.resize(1000, 820)
 
         layout = QVBoxLayout(self)
         self.status = QLabel(_(
-            'Wait for the check to clear / solve the captcha, then click "Download now". '
-            'The download is added to your library automatically, and the verification is '
-            'reused so the normal download button works for a while afterwards.'))
+            'Waiting for the verification check to clear… the download then starts '
+            'automatically and is added to your library. (If it asks you to wait or '
+            'tick a box, do that — the rest is automatic.)'))
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-        # Off-the-record profile so nothing is persisted to disk; it still has a
-        # working cookie store and download signal.
+        # Off-the-record profile: nothing persisted, but a working cookie store
+        # and download signal.
         self.profile = QWebEngineProfile(self)
         try:
             if user_agent:
@@ -90,8 +116,18 @@ class SlowDownloadBrowser(QDialog):
             pass
 
         self.view = QWebEngineView(self)
-        self._page = QWebEnginePage(self.profile, self.view)
+        self._page = _Page(self.profile, self.view)
         self.view.setPage(self._page)
+        # Force PDFs (and the like) to download instead of opening in the viewer.
+        try:
+            s = self._page.settings()
+            for attr in ('PdfViewerEnabled', 'PluginsEnabled'):
+                a = getattr(QWebEngineSettings.WebAttribute, attr, None) if not _QT5 \
+                    else getattr(QWebEngineSettings, attr, None)
+                if a is not None:
+                    s.setAttribute(a, False)
+        except Exception:
+            pass
         layout.addWidget(self.view, 1)
 
         row = QHBoxLayout()
@@ -115,6 +151,12 @@ class SlowDownloadBrowser(QDialog):
 
         self.view.load(QUrl(url))
 
+        # Poll for the "Download now" link appearing once the challenge clears.
+        self._poll = QTimer(self)
+        self._poll.setInterval(1500)
+        self._poll.timeout.connect(self._check_for_link)
+        self._poll.start()
+
     # ----------------------------------------------------------- cookies
 
     def _cookie_added(self, cookie):
@@ -125,11 +167,40 @@ class SlowDownloadBrowser(QDialog):
             value = _qba_to_str(cookie.value())
             domain = cookie.domain() or ''
             self.store.remember_cookies([(name, value, domain)])
-            self.status.setText(_(
-                '✓ Verification captured — the normal download button will now work '
-                'for a while. You can finish the download here or close this window.'))
         except Exception as err:
             prints("Anna's Archive: cookie parse failed:", err)
+
+    # ------------------------------------------------- auto-find the link
+
+    def _check_for_link(self):
+        if self._triggered:
+            return
+        self._tries += 1
+        if self._tries > 80:  # ~2 minutes; give up polling, leave window open
+            self._poll.stop()
+            self.status.setText(_(
+                'Could not detect the download link automatically. If a '
+                '"Download now" link is shown, click it.'))
+            return
+        try:
+            self._page.runJavaScript(_FIND_DOWNLOAD_JS, self._on_link_found)
+        except Exception as err:
+            prints("Anna's Archive: runJavaScript failed:", err)
+
+    def _on_link_found(self, href):
+        if self._triggered or not href:
+            return
+        self._triggered = True
+        try:
+            self._poll.stop()
+        except Exception:
+            pass
+        self.status.setText(_('Verification cleared — downloading…'))
+        # Navigating the view to the file URL triggers downloadRequested.
+        try:
+            self.view.setUrl(QUrl(href))
+        except Exception as err:
+            prints("Anna's Archive: navigate-to-file failed:", err)
 
     # --------------------------------------------------------- downloads
 
@@ -156,7 +227,6 @@ class SlowDownloadBrowser(QDialog):
         if self._added:
             return
         try:
-            # Only proceed on a genuinely completed download.
             is_finished = getattr(item, 'isFinished', None)
             if callable(is_finished) and not item.isFinished():
                 return
@@ -167,7 +237,8 @@ class SlowDownloadBrowser(QDialog):
             self._added = True
 
             if self._add_to_library(path):
-                self.status.setText(_('✓ Downloaded and added to your calibre library.'))
+                self.status.setText(_('✓ Downloaded and added to your calibre library. '
+                                      'You can close this window.'))
             else:
                 self.status.setText(_('Downloaded, but could not auto-add. Saved to: %s') % path)
         except Exception as err:
@@ -180,8 +251,6 @@ class SlowDownloadBrowser(QDialog):
             add_action = self.gui.iactions.get('Add Books')
         except Exception:
             add_action = None
-        if add_action is None:
-            return False
 
         tags = [t.strip() for t in self.tags.split(',') if t.strip()] if self.tags else []
         try:
@@ -195,15 +264,18 @@ class SlowDownloadBrowser(QDialog):
                 mi.tags = list(dict.fromkeys((list(mi.tags or []) + tags)))
                 db = self.gui.current_db.new_api
                 book_id = db.create_book_entry(mi)
-                db.add_format(book_id, fmt.upper(), path, run_hooks=False)
+                db.add_format(book_id, (fmt or 'unknown').upper(), path, run_hooks=False)
                 self.gui.library_view.model().books_added(1)
-                self.gui.refresh_ondevice()
+                try:
+                    self.gui.refresh_ondevice()
+                except Exception:
+                    pass
                 return True
         except Exception as err:
             prints("Anna's Archive: tagged import failed, falling back:", err)
 
-        # No tags (or tagged import failed): use the normal Add Books flow, which
-        # handles format-merging and duplicate detection for us.
+        if add_action is None:
+            return False
         try:
             add_action.add_filesystem_book(path, allow_device=False)
             return True
